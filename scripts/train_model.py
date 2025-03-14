@@ -16,8 +16,7 @@ import optuna
 class ModelTrainer:
     def __init__(self, results_path: str | None = None, data_file_paths: list[str] | None = None):
         self.results_path = results_path or "data\\results"
-        # self.data_file_paths = data_file_paths or ["data\\raw\\sales_ads_train.csv"]
-        self.data_file_paths = data_file_paths or ["D:\\PJATK\\DS club\\DSC_competition\\data\\raw\\sales_ads_train.csv"]
+        self.data_file_paths = data_file_paths or ["data\\raw\\sales_ads_train.csv"]
         self.target_variable = 'Cena'
 
     def train(self):
@@ -107,28 +106,28 @@ class ModelTrainer:
 
         output_folder_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        os.mkdir(f"D:\\PJATK\\DS club\\DSC_competition\\{self.results_path}\\{output_folder_name}")
+        os.mkdir(f"{self.results_path}\\{output_folder_name}")
 
-        study.trials_dataframe().to_csv(f"D:\\PJATK\\DS club\\DSC_competition\\{self.results_path}\\{output_folder_name}\\optuna_trials.csv", index=False)
+        study.trials_dataframe().to_csv(f"{self.results_path}\\{output_folder_name}\\optuna_trials.csv", index=False)
 
         # save model
-        with open(f'D:\\PJATK\\DS club\\DSC_competition\\{self.results_path}\\{output_folder_name}\\lgbm_model_{output_folder_name}.pkl', 'wb') as f:
+        with open(f'{self.results_path}\\{output_folder_name}\\lgbm_model_{output_folder_name}.pkl', 'wb') as f:
             pickle.dump(final_model, f)
 
         # save feature importance plot
         lgb.plot_importance(final_model, importance_type='gain', figsize=(10, 10))
-        plt.savefig(f"D:\\PJATK\\DS club\\DSC_competition\\{self.results_path}\\{output_folder_name}\\feature_importance_{output_folder_name}.png")
+        plt.savefig(f"{self.results_path}\\{output_folder_name}\\feature_importance_{output_folder_name}.png")
 
         #todo add eval on our test set
 
-        X_test = pd.read_csv("D:\\PJATK\\DS club\\DSC_competition\\data\\raw\\sales_ads_test.csv")
+        X_test = pd.read_csv("data\\raw\\sales_ads_test.csv")
         X_test, _ = self.prepare_data(X_test, drop_rows=False)
         test_pred = final_model.predict(X_test.drop(columns=["ID"]))
 
         # save csv with columns ID and Cena - final data for upload
         test_prediction_df = pd.DataFrame({"ID": X_test.index, "Cena": test_pred})
         print(test_prediction_df.head())
-        test_prediction_df.to_csv(f"D:\\PJATK\\DS club\\DSC_competition\\{self.results_path}\\{output_folder_name}\\kaggle_upload_prediction.csv", index=False)
+        test_prediction_df.to_csv(f"{self.results_path}\\{output_folder_name}\\kaggle_upload_prediction.csv", index=False)
 
 
 
