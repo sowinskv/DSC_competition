@@ -11,6 +11,7 @@ from datetime import datetime
 from sklearn.preprocessing import LabelEncoder
 import pickle
 import optuna
+import optuna.integration
 
 
 class ModelTrainer:
@@ -21,7 +22,7 @@ class ModelTrainer:
 
     def train(self):
         data = pd.concat([pd.read_csv(file) for file in self.data_file_paths], ignore_index=True)
-        X,y = self.prepare_data(data)
+        X,y = self.prepare_data(data, True)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         X_train, X_valid, y_train, y_valid = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
         self.train_lightgbm_regressor(X_train, X_valid, y_train, y_valid)
@@ -31,11 +32,30 @@ class ModelTrainer:
         if drop_rows:
             #todo dont drop rows when making final preds
             data = data.dropna()  # todo interpolate or drop missing values
+        else:
+            numeric_cols = data.select_dtypes(include=['float64', 'int64']).columns
+            categorical_cols = data.select_dtypes(include=['object', 'category']).columns
+
+            # numeric cols: impute with linear interpolation/mean
+            for col in numeric_cols:
+                data[col] = data[col].interpolate(method='linear', limit_direction='both')
+                # data[col].fillna(data[col].mean(), inplace=True)
+
+            # categorical cols: impute with mode
+            for col in categorical_cols:
+                data[col].fillna(data[col].mode()[0], inplace=True)
 
         for col in ["Data_pierwszej_rejestracji", "Data_publikacji_oferty"]:
             data[col] = pd.to_datetime(data[col], errors='coerce')
 
         data["Wiek_samochodu_lata"] = (data["Data_publikacji_oferty"] - data["Data_pierwszej_rejestracji"]).dt.days // 365
+
+        conversion_rates = {'EUR': 4.18, 'PLN': 1.0}
+        if 'Cena' in data.columns:
+            data['Cena'] = data.apply(
+                lambda row: row['Cena'] * conversion_rates.get(row['Waluta'], 1),
+                axis=1
+            )
 
         categorical_columns = [
             "Waluta", "Stan", "Marka_pojazdu", "Model_pojazdu", "Wersja_pojazdu",
@@ -53,8 +73,8 @@ class ModelTrainer:
         data = data.drop(columns=["Wyposazenie", "Data_pierwszej_rejestracji", "Data_publikacji_oferty"])
 
         if self.target_variable in data.columns:
-            # todo handle different currencies
-            X = data.drop(columns=[self.target_variable, "ID"])
+            # todo handle different currencies - DONE
+            X = data.drop(columns=[self.target_variable, "ID", "Waluta"])
             y = data[self.target_variable]
 
         else:
@@ -69,14 +89,14 @@ class ModelTrainer:
         train_data = lgb.Dataset(X_train, label=y_train)
         valid_data = lgb.Dataset(X_valid, label=y_valid, reference=train_data)
         def objective(trial):
-            #todo add pruning
+            #todo add pruning - DONE
             params = {
                 'objective': 'regression',
                 'metric': 'rmse',
                 'boosting_type': 'gbdt',
                 'verbosity': -1,
                 'seed': 42,
-                'feature_pre_filter': False, #todo check later
+                'feature_pre_filter': False,
                 'num_leaves': trial.suggest_int('num_leaves', 20, 100),
                 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
                 'n_estimators': trial.suggest_int('n_estimators', 100, 1000, step=100),
@@ -84,14 +104,19 @@ class ModelTrainer:
                 'min_child_samples': trial.suggest_int('min_child_samples', 10, 50)
             }
 
-            model = lgb.train(params, train_data, valid_sets=[valid_data], num_boost_round=1000)
+            model = lgb.train(
+                params,
+                train_data,
+                valid_sets=[valid_data],
+                num_boost_round=1000,
+                callbacks=[optuna.integration.LightGBMPruningCallback(trial, "rmse")]
+            )
             y_pred = model.predict(X_valid)
-            rmse = np.sqrt(mean_squared_error(y_valid, y_pred))
-            return rmse
+            return np.sqrt(mean_squared_error(y_valid, y_pred))
 
         # Optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=1) #todo use more
+        study.optimize(objective, n_trials=100) #todo use more
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
@@ -120,8 +145,8 @@ class ModelTrainer:
 
         #todo add eval on our test set
 
-        X_test = pd.read_csv("data\\raw\\sales_ads_test.csv")
-        X_test, _ = self.prepare_data(X_test, drop_rows=False)
+        X_test = pd.read_csv("../data/raw/sales_ads_test.csv")
+        X_test, _ = self.prepare_data(X_test, drop_rows=True)
         test_pred = final_model.predict(X_test.drop(columns=["ID"]))
 
         # save csv with columns ID and Cena - final data for upload
@@ -132,5 +157,5 @@ class ModelTrainer:
 
 
 
-model_trainer = ModelTrainer()
+model_trainer = ModelTrainer('../data/results', ["../data/raw/sales_ads_train.csv"])
 model_trainer.train()
