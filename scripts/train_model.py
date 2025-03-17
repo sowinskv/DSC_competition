@@ -29,6 +29,7 @@ class ModelTrainer:
 
         self.train_lightgbm_regressor(X_train, y_train, X_test, y_test)
 
+
     def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True, fit_encoder: bool = False) -> tuple[pd.DataFrame, pd.Series | None]:
         if drop_rows:
             #todo dont drop rows when making final preds
@@ -98,7 +99,7 @@ class ModelTrainer:
         if self.target_variable in data.columns:
             # todo handle different currencies - DONE
             X = data.drop(columns=[self.target_variable, "ID"])
-            y = data[self.target_variable]
+            y = np.log1p(data[self.target_variable]) # log scaling
 
         else:
             # when we prepare test data there is no target variable
@@ -130,7 +131,8 @@ class ModelTrainer:
                 train_data,
                 nfold=5,
                 num_boost_round=1000,
-                seed=42
+                seed=42,
+                stratified = False # basic kfold for continous (log) target
             )
 
             return cv_results['valid rmse-mean'][-1]
@@ -154,9 +156,8 @@ class ModelTrainer:
             train_data,
             nfold=5,
             num_boost_round=1000,
-            # early_stopping_rounds=50,
             seed=42,
-            # verbose_eval=False
+            stratified=False
         )
         best_iteration = len(cv_results['valid rmse-mean'])
 
@@ -185,8 +186,13 @@ class ModelTrainer:
         #todo add eval on our test set
 
         X_test = pd.read_csv("../data/raw/sales_ads_test.csv")
+        currencies = X_test["Waluta"].copy()
         X_test, _ = self.prepare_data(X_test, drop_rows=False)
         test_pred = final_model.predict(X_test.drop(columns=["ID"]))
+        test_pred = np.expm1(test_pred)  # reverse log scaling
+
+        mask_eur = currencies == 'EUR'
+        test_pred[mask_eur] = test_pred[mask_eur] / 4.18
 
         # save csv with columns ID and Cena - final data for upload
         test_prediction_df = pd.DataFrame({"ID": X_test.index + 1, "Cena": test_pred})  # start ID from 1
