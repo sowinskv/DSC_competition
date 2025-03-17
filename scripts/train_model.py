@@ -24,11 +24,10 @@ class ModelTrainer:
 
     def train(self):
         data = pd.concat([pd.read_csv(file) for file in self.data_file_paths], ignore_index=True)
-        X,y = self.prepare_data(data, True, True)
+        X, y = self.prepare_data(data, True, True)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        X_train, X_valid, y_train, y_valid = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
-        self.train_lightgbm_regressor(X_train, X_valid, y_train, y_valid)
 
+        self.train_lightgbm_regressor(X_train, y_train, X_test, y_test)
 
     def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True, fit_encoder: bool = False) -> tuple[pd.DataFrame, pd.Series | None]:
         if drop_rows:
@@ -45,7 +44,7 @@ class ModelTrainer:
 
             # categorical cols: impute with mode
             for col in categorical_cols:
-                data[col].fillna(data[col].mode()[0], inplace=True)
+                data[col] = data[col].fillna(data[col].mode()[0])
 
         for col in ["Data_pierwszej_rejestracji", "Data_publikacji_oferty"]:
             data[col] = pd.to_datetime(data[col], errors='coerce')
@@ -109,11 +108,11 @@ class ModelTrainer:
         return X, y
 
 
-    def train_lightgbm_regressor(self, X_train, X_valid, y_train, y_valid):
+    def train_lightgbm_regressor(self, X_train, y_train, X_test, y_test):
+
         train_data = lgb.Dataset(X_train, label=y_train)
-        valid_data = lgb.Dataset(X_valid, label=y_valid, reference=train_data)
+
         def objective(trial):
-            #todo add pruning - DONE
             params = {
                 'objective': 'regression',
                 'metric': 'rmse',
@@ -123,35 +122,51 @@ class ModelTrainer:
                 'feature_pre_filter': False,
                 'num_leaves': trial.suggest_int('num_leaves', 20, 100),
                 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                'n_estimators': trial.suggest_int('n_estimators', 100, 1000, step=100),
                 'max_depth': trial.suggest_int('max_depth', 3, 15),
                 'min_child_samples': trial.suggest_int('min_child_samples', 10, 50)
             }
-
-            model = lgb.train(
+            cv_results = lgb.cv(
                 params,
                 train_data,
-                valid_sets=[valid_data],
+                nfold=5,
                 num_boost_round=1000,
-                callbacks=[optuna.integration.LightGBMPruningCallback(trial, "rmse")]
+                seed=42
             )
-            y_pred = model.predict(X_valid)
-            return np.sqrt(mean_squared_error(y_valid, y_pred))
 
-        # Optimize hyperparameters
+            return cv_results['valid rmse-mean'][-1]
+
+        # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=100) #todo use more
+        study.optimize(objective, n_trials=50)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
-        best_params.update(
-            {'objective': 'regression', 'metric': 'rmse', 'boosting_type': 'gbdt', 'verbosity': -1, 'seed': 42})
+        best_params.update({
+            'objective': 'regression',
+            'metric': 'rmse',
+            'boosting_type': 'gbdt',
+            'verbosity': -1,
+            'seed': 42
+        })
 
-        final_model = lgb.train(best_params, train_data, valid_sets=[valid_data],num_boost_round=1000)
+        cv_results = lgb.cv(
+            best_params,
+            train_data,
+            nfold=5,
+            num_boost_round=1000,
+            # early_stopping_rounds=50,
+            seed=42,
+            # verbose_eval=False
+        )
+        best_iteration = len(cv_results['valid rmse-mean'])
 
-        y_pred = final_model.predict(X_valid)
-        rmse = np.sqrt(mean_squared_error(y_valid, y_pred))
-        print(f'Final RMSE: {rmse:.4f}')
+        final_model = lgb.train(best_params, train_data, num_boost_round=best_iteration)
+
+        # eval on the held-out test set
+        y_pred = final_model.predict(X_test)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        print(f'Final RMSE on test set: {rmse:.4f}')
+
 
         output_folder_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
