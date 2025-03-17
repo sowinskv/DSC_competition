@@ -1,2 +1,0 @@
-number,value,datetime_start,datetime_complete,duration,params_learning_rate,params_max_depth,params_min_child_samples,params_n_estimators,params_num_leaves,state
-0,30114.438895863084,2025-03-17 07:15:58.849016,2025-03-17 07:16:00.757716,0 days 00:00:01.908700,0.2324562961529422,7,29,800,75,COMPLETE

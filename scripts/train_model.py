@@ -8,10 +8,11 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_squared_error
 from datetime import datetime
 
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 import pickle
 import optuna
 import optuna.integration
+import re
 
 
 class ModelTrainer:
@@ -19,16 +20,17 @@ class ModelTrainer:
         self.results_path = results_path or "data\\results"
         self.data_file_paths = data_file_paths or ["data\\raw\\sales_ads_train.csv"]
         self.target_variable = 'Cena'
+        self.ohe = None # 1 one hot encoder for all data
 
     def train(self):
         data = pd.concat([pd.read_csv(file) for file in self.data_file_paths], ignore_index=True)
-        X,y = self.prepare_data(data, True)
+        X,y = self.prepare_data(data, True, True)
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         X_train, X_valid, y_train, y_valid = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
         self.train_lightgbm_regressor(X_train, X_valid, y_train, y_valid)
 
 
-    def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True) -> tuple[pd.DataFrame, pd.Series | None]:
+    def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True, fit_encoder: bool = False) -> tuple[pd.DataFrame, pd.Series | None]:
         if drop_rows:
             #todo dont drop rows when making final preds
             data = data.dropna()  # todo interpolate or drop missing values
@@ -63,9 +65,31 @@ class ModelTrainer:
             "Typ_nadwozia", "Kolor", "Kraj_pochodzenia", "Lokalizacja_oferty"
         ]
 
-        for col in categorical_columns:
-            le = LabelEncoder() #todo change encoders
-            data[col] = le.fit_transform(data[col].astype(str))
+        def make_unique(columns):
+            seen = {}
+            new_cols = []
+            for col in columns:
+                if col in seen:
+                    seen[col] += 1
+                    new_col = f"{col}_{seen[col]}"
+                else:
+                    seen[col] = 0
+                    new_col = col
+                new_cols.append(new_col)
+            return new_cols
+
+        if fit_encoder or self.ohe is None:
+            self.ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+            ohe_array = self.ohe.fit_transform(data[categorical_columns])
+        else:
+            ohe_array = self.ohe.transform(data[categorical_columns])
+        ohe_df = pd.DataFrame(ohe_array, columns=self.ohe.get_feature_names_out(categorical_columns))
+        ohe_df.columns = [re.sub(r'\W+', '_', col).strip('_') for col in ohe_df.columns]
+        ohe_df.columns = make_unique(ohe_df.columns)
+
+        data = pd.concat([data.drop(columns=categorical_columns), ohe_df], axis=1)
+        data.fillna(0, inplace=True) # temporary - todo handle missing values
+
 
         data["Pierwszy_wlasciciel"] = data["Pierwszy_wlasciciel"].replace({"Yes": 1, "No": 0})
 
@@ -74,7 +98,7 @@ class ModelTrainer:
 
         if self.target_variable in data.columns:
             # todo handle different currencies - DONE
-            X = data.drop(columns=[self.target_variable, "ID", "Waluta"])
+            X = data.drop(columns=[self.target_variable, "ID"])
             y = data[self.target_variable]
 
         else:
@@ -146,16 +170,16 @@ class ModelTrainer:
         #todo add eval on our test set
 
         X_test = pd.read_csv("../data/raw/sales_ads_test.csv")
-        X_test, _ = self.prepare_data(X_test, drop_rows=True)
+        X_test, _ = self.prepare_data(X_test, drop_rows=False)
         test_pred = final_model.predict(X_test.drop(columns=["ID"]))
 
         # save csv with columns ID and Cena - final data for upload
-        test_prediction_df = pd.DataFrame({"ID": X_test.index, "Cena": test_pred})
+        test_prediction_df = pd.DataFrame({"ID": X_test.index + 1, "Cena": test_pred})  # start ID from 1
         print(test_prediction_df.head())
         test_prediction_df.to_csv(f"{self.results_path}\\{output_folder_name}\\kaggle_upload_prediction.csv", index=False)
 
 
 
 
-model_trainer = ModelTrainer('../data/results', ["../data/raw/sales_ads_train.csv"])
+model_trainer = ModelTrainer('../data/results/', ["../data/raw/sales_ads_train.csv"])
 model_trainer.train()
