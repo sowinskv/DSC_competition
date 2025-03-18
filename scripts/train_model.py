@@ -33,9 +33,9 @@ class ModelTrainer:
 
     def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True, fit_encoder: bool = False) -> tuple[pd.DataFrame, pd.Series | None]:
         if drop_rows:
-            #todo dont drop rows when making final preds
-            data = data.dropna()  # todo interpolate or drop missing values
+            data = data.dropna()
         else:
+            # impute missing values
             missing_threshold = 0.05  # only impute columns with more than 5% missing values
             numeric_cols = data.select_dtypes(include=['float64', 'int64']).columns
             numeric_to_impute = [col for col in numeric_cols if data[col].isnull().mean() > missing_threshold]
@@ -70,6 +70,23 @@ class ModelTrainer:
             "Typ_nadwozia", "Kolor", "Kraj_pochodzenia", "Lokalizacja_oferty"
         ]
 
+        if 'Wyposazenie' in data.columns:
+            import ast
+            from sklearn.preprocessing import MultiLabelBinarizer
+            def parse_equipment(x):
+                try:
+                    return ast.literal_eval(x)
+                except Exception:
+                    return []
+
+            data['wyposazenie_list'] = data['Wyposazenie'].apply(parse_equipment)
+            mlb = MultiLabelBinarizer(sparse_output=True)
+            equipment_matrix = mlb.fit_transform(data['wyposazenie_list'])
+            equipment_df = pd.DataFrame.sparse.from_spmatrix(equipment_matrix, columns=mlb.classes_)
+            common_features = equipment_df.columns[equipment_df.sum() > 50] # optional
+            equipment_df = equipment_df[common_features]
+            data = pd.concat([data.drop(columns=["Wyposazenie", "wyposazenie_list"]), equipment_df], axis=1)
+
         def make_unique(columns):
             seen = {}
             new_cols = []
@@ -83,6 +100,8 @@ class ModelTrainer:
                 new_cols.append(new_col)
             return new_cols
 
+
+        # encode
         if fit_encoder or self.ohe is None:
             self.ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
             ohe_array = self.ohe.fit_transform(data[categorical_columns])
@@ -101,11 +120,9 @@ class ModelTrainer:
 
         data["Pierwszy_wlasciciel"] = data["Pierwszy_wlasciciel"].replace({"Yes": 1, "No": 0})
 
-        #todo handle this
-        data = data.drop(columns=["Wyposazenie", "Data_pierwszej_rejestracji", "Data_publikacji_oferty"])
+        data = data.drop(columns=["Data_pierwszej_rejestracji", "Data_publikacji_oferty"])
 
         if self.target_variable in data.columns:
-            # todo handle different currencies - DONE
             X = data.drop(columns=[self.target_variable, "ID"])
             y = np.log1p(data[self.target_variable]) # log scaling
 
@@ -147,7 +164,7 @@ class ModelTrainer:
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=50)
+        study.optimize(objective, n_trials=1)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
