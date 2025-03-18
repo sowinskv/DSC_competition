@@ -9,6 +9,7 @@ from sklearn.metrics import mean_squared_error
 from datetime import datetime
 
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.impute import SimpleImputer
 import pickle
 import optuna
 import optuna.integration
@@ -24,7 +25,7 @@ class ModelTrainer:
 
     def train(self):
         data = pd.concat([pd.read_csv(file) for file in self.data_file_paths], ignore_index=True)
-        X, y = self.prepare_data(data, True, True)
+        X, y = self.prepare_data(data, False, True) # todo change to False when making final predictions
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
         self.train_lightgbm_regressor(X_train, y_train, X_test, y_test)
@@ -35,20 +36,24 @@ class ModelTrainer:
             #todo dont drop rows when making final preds
             data = data.dropna()  # todo interpolate or drop missing values
         else:
+            missing_threshold = 0.05  # only impute columns with more than 5% missing values
             numeric_cols = data.select_dtypes(include=['float64', 'int64']).columns
+            numeric_to_impute = [col for col in numeric_cols if data[col].isnull().mean() > missing_threshold]
+
             categorical_cols = data.select_dtypes(include=['object', 'category']).columns
+            categorical_to_impute = [col for col in categorical_cols if data[col].isnull().mean() > missing_threshold]
 
-            # numeric cols: impute with linear interpolation/mean
-            for col in numeric_cols:
-                data[col] = data[col].interpolate(method='linear', limit_direction='both')
-                # data[col].fillna(data[col].mean(), inplace=True)
+            if numeric_to_impute:
+                num_imputer = SimpleImputer(strategy='mean')
+                data[numeric_to_impute] = num_imputer.fit_transform(data[numeric_to_impute])
 
-            # categorical cols: impute with mode
-            for col in categorical_cols:
-                data[col] = data[col].fillna(data[col].mode()[0])
+            if categorical_to_impute:
+                cat_imputer = SimpleImputer(strategy='most_frequent')
+                data[categorical_to_impute] = cat_imputer.fit_transform(data[categorical_to_impute])
+
 
         for col in ["Data_pierwszej_rejestracji", "Data_publikacji_oferty"]:
-            data[col] = pd.to_datetime(data[col], errors='coerce')
+            data[col] = pd.to_datetime(data[col], errors='coerce', format='%d/%m/%Y')
 
         data["Wiek_samochodu_lata"] = (data["Data_publikacji_oferty"] - data["Data_pierwszej_rejestracji"]).dt.days // 365
 
@@ -79,17 +84,20 @@ class ModelTrainer:
             return new_cols
 
         if fit_encoder or self.ohe is None:
-            self.ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+            self.ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
             ohe_array = self.ohe.fit_transform(data[categorical_columns])
         else:
             ohe_array = self.ohe.transform(data[categorical_columns])
-        ohe_df = pd.DataFrame(ohe_array, columns=self.ohe.get_feature_names_out(categorical_columns))
+        ohe_df = pd.DataFrame.sparse.from_spmatrix(
+            ohe_array,
+            columns=self.ohe.get_feature_names_out(categorical_columns)
+        )
         ohe_df.columns = [re.sub(r'\W+', '_', col).strip('_') for col in ohe_df.columns]
         ohe_df.columns = make_unique(ohe_df.columns)
 
         data = pd.concat([data.drop(columns=categorical_columns), ohe_df], axis=1)
-        data.fillna(0, inplace=True) # temporary - todo handle missing values
-
+        numeric_cols = data.select_dtypes(include=['float64', 'int64']).columns
+        data[numeric_cols] = data[numeric_cols].fillna(0)
 
         data["Pierwszy_wlasciciel"] = data["Pierwszy_wlasciciel"].replace({"Yes": 1, "No": 0})
 
@@ -139,7 +147,7 @@ class ModelTrainer:
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=50)
+        study.optimize(objective, n_trials=1)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
