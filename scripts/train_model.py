@@ -147,7 +147,7 @@ class ModelTrainer:
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=1)
+        study.optimize(objective, n_trials=50)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
