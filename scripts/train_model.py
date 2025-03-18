@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+from sklearn.model_selection import cross_val_score
 from matplotlib import pyplot as plt
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_squared_error
@@ -14,6 +17,7 @@ import pickle
 import optuna
 import optuna.integration
 import re
+from lightgbm import cv
 
 
 class ModelTrainer:
@@ -187,16 +191,27 @@ class ModelTrainer:
         best_iteration = len(cv_results['valid rmse-mean'])
 
         final_model = lgb.train(best_params, train_data, num_boost_round=best_iteration)
+        # we need this because cross validation requires estimator to be passed but train returns booster
+        lgbm_model = lgb.LGBMRegressor()
+        lgbm_model._Booster = final_model
 
         # eval on the held-out test set
-        y_pred = final_model.predict(X_test)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        print(f'Final RMSE on test set: {rmse:.4f}')
+        test_cv_scores = cross_val_score(lgbm_model, X_test, y_test, cv=5, scoring="neg_root_mean_squared_error")
+        train_cv_scores = cross_val_score(lgbm_model, X_train, y_train, cv=5, scoring="neg_root_mean_squared_error")
+
+        print("%0.2f accuracy with a standard deviation of %0.2f test" % (test_cv_scores.mean(), test_cv_scores.std()))
+        print("%0.2f accuracy with a standard deviation of %0.2f train" % (train_cv_scores.mean(), train_cv_scores.std()))
 
 
         output_folder_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         os.mkdir(f"{self.results_path}\\{output_folder_name}")
+
+        with open(f"{self.results_path}\\{output_folder_name}\\scores.txt", "a") as f:
+            f.write("%0.2f accuracy with a standard deviation of %0.2f test" % (test_cv_scores.mean(), test_cv_scores.std()))
+            f.write("\n")
+            f.write("%0.2f accuracy with a standard deviation of %0.2f train" % (train_cv_scores.mean(), train_cv_scores.std()))
+
 
         study.trials_dataframe().to_csv(f"{self.results_path}\\{output_folder_name}\\optuna_trials.csv", index=False)
 
