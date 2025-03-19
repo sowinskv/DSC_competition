@@ -18,6 +18,7 @@ import optuna
 import optuna.integration
 import re
 from lightgbm import cv
+from sklearn.ensemble import IsolationForest
 
 
 class ModelTrainer:
@@ -32,8 +33,21 @@ class ModelTrainer:
         X, y = self.prepare_data(data, False, True) # todo change to False when making final predictions
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
+        X_train, y_train = self.remove_outliers_isolation_forest(X_train, y_train)
+
         self.train_lightgbm_regressor(X_train, y_train, X_test, y_test)
 
+    def remove_outliers_isolation_forest(self, X: pd.DataFrame, y: pd.Series, contamination: float = 0.01) -> tuple[
+        pd.DataFrame, pd.Series]:
+        iso = IsolationForest(contamination=contamination, random_state=42)
+        iso.fit(X)
+        # 1 for inliers, -1 for outliers
+        preds = iso.predict(X)
+        # keep only inliers
+        mask = preds != -1
+        X_clean = X[mask]
+        y_clean = y[mask]
+        return X_clean, y_clean
 
     def prepare_data(self, data: pd.DataFrame, drop_rows: bool = True, fit_encoder: bool = False) -> tuple[pd.DataFrame, pd.Series | None]:
         if drop_rows:
@@ -168,7 +182,7 @@ class ModelTrainer:
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=1)
+        study.optimize(objective, n_trials=100)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
@@ -220,7 +234,7 @@ class ModelTrainer:
             pickle.dump(final_model, f)
 
         # save feature importance plot
-        lgb.plot_importance(final_model, importance_type='gain', figsize=(10, 10))
+        lgb.plot_importance(final_model, importance_type='gain', max_num_features=30, figsize=(10, 10))
         plt.savefig(f"{self.results_path}\\{output_folder_name}\\feature_importance_{output_folder_name}.png")
 
         #todo add eval on our test set
