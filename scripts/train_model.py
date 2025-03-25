@@ -125,6 +125,17 @@ class ModelTrainer:
 
         data = data.drop(columns=["Data_pierwszej_rejestracji", "Data_publikacji_oferty"])
 
+        if "Przebieg_km" in data.columns and "Wiek_samochodu_lata" in data.columns:
+            data["Wiek_samochodu_lata"] = data["Wiek_samochodu_lata"].replace({0: np.nan})
+            data["Sredni_roczny_przebieg"] = data["Przebieg_km"] / data["Wiek_samochodu_lata"]
+
+        if "Moc_kM" in data.columns and "Pojemnosc_cm3" in data.columns:
+            data["Moc_na_pojemnosc"] = data["Moc_kM"] / data["Pojemnosc_cm3"]
+
+        if "Marka_pojazdu_freq" in data.columns and "Marka_pojazdu_freq" not in cat_cols:
+            # This is more of a demonstration; you'd actually want to check the brand column before freq encoding
+            pass
+
         if self.target_variable in data.columns:
             X = data.drop(columns=[self.target_variable, "ID"])
             y = np.log1p(data[self.target_variable]) # log scaling
@@ -208,7 +219,7 @@ class ModelTrainer:
             pickle.dump(final_model, f)
 
         # save feature importance plot
-        lgb.plot_importance(final_model, importance_type='gain', figsize=(10, 10))
+        lgb.plot_importance(final_model, importance_type='gain', max_num_features=30, figsize=(10, 10))
         plt.savefig(f"{self.results_path}\\{output_folder_name}\\feature_importance_{output_folder_name}.png")
 
         #todo add eval on our test set
