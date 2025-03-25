@@ -64,8 +64,8 @@ class ModelTrainer:
                 axis=1
             )
 
-        # data['Marka_pojazdu_freq'] = data['Marka_pojazdu'].map(data['Marka_pojazdu'].value_counts()/len(data))
-        # data['Model_pojazdu_freq'] = data['Model_pojazdu'].map(data['Model_pojazdu'].value_counts()/len(data))
+        data['Marka_pojazdu_freq'] = data['Marka_pojazdu'].map(data['Marka_pojazdu'].value_counts()/len(data))
+        data['Model_pojazdu_freq'] = data['Model_pojazdu'].map(data['Model_pojazdu'].value_counts()/len(data))
 
         categorical_columns = [
             "Waluta", "Stan", "Marka_pojazdu", "Model_pojazdu", "Wersja_pojazdu",
@@ -125,16 +125,19 @@ class ModelTrainer:
 
         data = data.drop(columns=["Data_pierwszej_rejestracji", "Data_publikacji_oferty"])
 
+
+        # ---- feature engineering ----
         if "Przebieg_km" in data.columns and "Wiek_samochodu_lata" in data.columns:
             data["Wiek_samochodu_lata"] = data["Wiek_samochodu_lata"].replace({0: np.nan})
             data["Sredni_roczny_przebieg"] = data["Przebieg_km"] / data["Wiek_samochodu_lata"]
 
-        if "Moc_kM" in data.columns and "Pojemnosc_cm3" in data.columns:
-            data["Moc_na_pojemnosc"] = data["Moc_kM"] / data["Pojemnosc_cm3"]
+        if "Moc_KM" in data.columns and "Pojemnosc_cm3" in data.columns:
+            data["Moc_na_pojemnosc"] = data["Moc_KM"] / data["Pojemnosc_cm3"]
 
-        if "Marka_pojazdu_freq" in data.columns and "Marka_pojazdu_freq" not in cat_cols:
-            # This is more of a demonstration; you'd actually want to check the brand column before freq encoding
-            pass
+        if "Marka_pojazdu" in data.columns and "Cena" in data.columns:
+            brand_avg_price = data.groupby("Marka_pojazdu")["Cena"].mean()
+            premium_brands = brand_avg_price[brand_avg_price > 100000].index
+            data["Premium_marka"] = data["Marka_pojazdu"].isin(premium_brands).astype(int)
 
         if self.target_variable in data.columns:
             X = data.drop(columns=[self.target_variable, "ID"])
@@ -150,7 +153,10 @@ class ModelTrainer:
 
     def train_lightgbm_regressor(self, X_train, y_train, X_test, y_test):
 
-        train_data = lgb.Dataset(X_train, label=y_train)
+        X_tr, X_val, y_tr, y_val = train_test_split(X_train, y_train, test_size=0.1, random_state=42)
+        train_data = lgb.Dataset(X_tr, label=y_tr)
+        valid_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
+
 
         def objective(trial):
             params = {
@@ -163,22 +169,28 @@ class ModelTrainer:
                 'num_leaves': trial.suggest_int('num_leaves', 20, 100),
                 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
                 'max_depth': trial.suggest_int('max_depth', 3, 15),
-                'min_child_samples': trial.suggest_int('min_child_samples', 10, 50)
+                'min_child_samples': trial.suggest_int('min_child_samples', 10, 50),
+                'feature_fraction': trial.suggest_float('feature_fraction', 0.5, 1.0),
+                'bagging_fraction': trial.suggest_float('bagging_fraction', 0.5, 1.0),
+                'bagging_freq': trial.suggest_int('bagging_freq', 1, 5),
+                'lambda_l1': trial.suggest_float('lambda_l1', 1e-8, 10.0, log=True),
+                'lambda_l2': trial.suggest_float('lambda_l2', 1e-8, 10.0, log=True),
             }
-            cv_results = lgb.cv(
+            gbm = lgb.train(
                 params,
                 train_data,
-                nfold=5,
-                num_boost_round=1000,
-                seed=42,
-                stratified = False # basic kfold for continous (log) target
+                num_boost_round=2000,
+                valid_sets=[valid_data],
+                callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
             )
-
-            return cv_results['valid rmse-mean'][-1]
+            # eval on the valid set
+            y_pred_val = gbm.predict(X_val)
+            rmse_val = np.sqrt(mean_squared_error(y_val, y_pred_val))
+            return rmse_val
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=50)
+        study.optimize(objective, n_trials=150)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
@@ -190,17 +202,23 @@ class ModelTrainer:
             'seed': 42
         })
 
-        cv_results = lgb.cv(
+        # cv_results = lgb.cv(
+        #     best_params,
+        #     train_data,
+        #     nfold=5,
+        #     num_boost_round=1000,
+        #     seed=42,
+        #     stratified=False
+        # )
+        # best_iteration = len(cv_results['valid rmse-mean'])
+
+        final_model = lgb.train(
             best_params,
             train_data,
-            nfold=5,
-            num_boost_round=1000,
-            seed=42,
-            stratified=False
+            num_boost_round=2000,
+            valid_sets=[valid_data],
+            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True)]
         )
-        best_iteration = len(cv_results['valid rmse-mean'])
-
-        final_model = lgb.train(best_params, train_data, num_boost_round=best_iteration)
 
         # eval on the held-out test set
         y_pred = final_model.predict(X_test)
