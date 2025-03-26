@@ -11,3 +11,10 @@ pip install -r requirements.txt
 
 ```bash
 python scripts/download_data.py
+```
+
+3. prepare data and train the model:
+
+```bash
+python scripts/train_model.py
+```
