@@ -127,15 +127,14 @@ class ModelTrainer:
                 lambda row: row['Cena'] * conversion_rates.get(row['Waluta'], 1),
                 axis=1
             )
-
+        data['Pierwszy_wlasciciel'] = data['Pierwszy_wlasciciel'].apply(lambda x: 1 if x == 'Yes' else 0)
         # todo małe miasto duże miasto
 
         data['Wojewodztwo'] = data['Lokalizacja_oferty'].apply(lambda x: assign_voivodeship(x))
 
         # category encoding
         categorical_columns = [
-            "Waluta", "Stan", "Marka_pojazdu", "Model_pojazdu", "Wersja_pojazdu",
-            "Generacja_pojazdu", "Rodzaj_paliwa", "Naped", "Skrzynia_biegow",
+            "Waluta", "Stan", "Marka_pojazdu", "Model_pojazdu", "Rodzaj_paliwa", "Naped", "Skrzynia_biegow",
             "Typ_nadwozia", "Kolor", "Kraj_pochodzenia", "Wojewodztwo"
         ]
 
@@ -150,7 +149,30 @@ class ModelTrainer:
 
         data["mileage_per_year"] = data["Przebieg_km"] / (data["Wiek_samochodu_lata"] + 1)
         data["power_capacity_ratio"] = data["Moc_KM"] / (data["Pojemnosc_cm3"] + 1)
-        data["luxury_brand"] = data["Marka_pojazdu"].apply(lambda x: 1 if x in ['Audi', 'BMW', 'Mercedes-Benz', 'Volvo', 'Jaguar', 'Lexus', 'Porsche', 'Land Rover'] else 0)
+        data["luxury_brand"] = data["Marka_pojazdu"].apply(lambda x: 1 if x in ['McLaren',
+         'Rolls-Royce',
+         'Lamborghini',
+         'Ferrari',
+         'Bentley',
+         'Aston Martin',
+         'Alpine',
+         'Porsche',
+         'RAM',
+         'Maserati',
+         'Tesla',
+         'Land Rover',
+         'Cupra',
+         'Vanderhall',
+         'DS Automobiles',
+         'Jaguar',
+         'FAW',
+         'DFSK',
+         'Isuzu',
+         'Mercedes-Benz',
+         'Lexus',
+         'Lotus',
+         'Cadillac'] else 0)
+
         #todo wyposazenie na kategorie czestosci/rzadkosci wystepowania
         if 'Wyposazenie' in data.columns:
             import ast
@@ -179,6 +201,8 @@ class ModelTrainer:
             equipment_df = equipment_df[common_features]
             data = pd.concat([data.drop(columns=["Wyposazenie", "wyposazenie_list"]), equipment_df], axis=1)
 
+        data['Marka_pojazdu_freq'] = data['Marka_pojazdu'].map(data['Marka_pojazdu'].value_counts()) / len(data)
+        data['Model_pojazdu_freq'] = data['Model_pojazdu'].map(data['Model_pojazdu'].value_counts()) / len(data)
 
         if self.target_variable in data.columns:
             y = np.log1p(data[self.target_variable])  # log transform
@@ -197,12 +221,13 @@ class ModelTrainer:
             data[categorical_columns] = self.encoder.transform(data[categorical_columns])
 
         # delete columns
-        data = data.drop(columns=["Data_pierwszej_rejestracji", "Data_publikacji_oferty", "Pierwszy_wlasciciel", "Lokalizacja_oferty",])
+        data = data.drop(columns=["Data_pierwszej_rejestracji", "Data_publikacji_oferty", "Lokalizacja_oferty", "Wersja_pojazdu","Generacja_pojazdu"])
         if self.target_variable in data.columns:
             X = data.drop(columns=[self.target_variable, "ID"])
         else:
             X = data
 
+        print(X.columns)
         return X, y
 
     def train_lightgbm_regressor(self, X_train, y_train, X_test, y_test):
@@ -271,8 +296,34 @@ class ModelTrainer:
         print("%0.2f accuracy with a standard deviation of %0.2f test" % (test_cv_scores.mean(), test_cv_scores.std()))
         print("%0.2f accuracy with a standard deviation of %0.2f train" % (train_cv_scores.mean(), train_cv_scores.std()))
 
+
         output_folder_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         os.mkdir(f"{self.results_path}\\{output_folder_name}")
+
+        test_preds = final_model.predict(X_test)
+        test_preds = np.expm1(test_preds)  # reverse log transform
+        train_preds = final_model.predict(X_train)
+        train_preds = np.expm1(train_preds)  # reverse log transform
+        # save csv with features, predictions, and actual values
+        results_df = pd.DataFrame({
+            'Actual': np.expm1(y_test),
+            'Predicted': test_preds,
+            'Residual': np.expm1(y_test) - test_preds,
+            'Percentage Error': ((np.expm1(y_test) - test_preds) / np.expm1(y_test)) * 100,
+        })
+        final_df = pd.concat([results_df, X_test], axis=1)
+        final_df.to_csv(f"{self.results_path}\\{output_folder_name}\\test-results.csv", index=False)
+
+
+        results_df = pd.DataFrame({
+            'Actual': np.expm1(y_train),
+            'Predicted': train_preds,
+            'Residual': np.expm1(y_train) - train_preds,
+            'Percentage Error': ((np.expm1(y_train) - train_preds) / np.expm1(y_train)) * 100,
+        })
+        final_df = pd.concat([results_df, X_train], axis=1)
+        final_df.to_csv(f"{self.results_path}\\{output_folder_name}\\train-results.csv", index=False)
+
         with open(f"{self.results_path}\\{output_folder_name}\\scores.txt", "a") as f:
             f.write("%0.2f accuracy with a standard deviation of %0.2f test\n" % (test_cv_scores.mean(), test_cv_scores.std()))
             f.write("%0.2f accuracy with a standard deviation of %0.2f train" % (train_cv_scores.mean(), train_cv_scores.std()))
