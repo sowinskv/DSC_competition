@@ -1,6 +1,9 @@
 # DSC_competition
 A project for Data Science Club PJAIT 2025 competition
 
+## Structure
+```EDA.ipynb``` - dataset analysis
+
 
 1. install required packages:
 ```bash
