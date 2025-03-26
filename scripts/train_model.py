@@ -4,11 +4,11 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from matplotlib import pyplot as plt
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from datetime import datetime
 
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 import pickle
 import optuna
@@ -190,7 +190,7 @@ class ModelTrainer:
 
         # optimize hyperparameters
         study = optuna.create_study(direction='minimize')
-        study.optimize(objective, n_trials=150)
+        study.optimize(objective, n_trials=200)
         print("Best Parameters:", study.best_params)
 
         best_params = study.best_params
@@ -201,16 +201,6 @@ class ModelTrainer:
             'verbosity': -1,
             'seed': 42
         })
-
-        # cv_results = lgb.cv(
-        #     best_params,
-        #     train_data,
-        #     nfold=5,
-        #     num_boost_round=1000,
-        #     seed=42,
-        #     stratified=False
-        # )
-        # best_iteration = len(cv_results['valid rmse-mean'])
 
         final_model = lgb.train(
             best_params,
